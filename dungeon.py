@@ -21,8 +21,41 @@ ROOM_WIDTH = (5, 20)
 # Minimum separation between rooms
 MIN_SEP = 2
 
+TRAP_PROB = 0.5
+
+MONSTER_PROB = 0.9
+
+REGEN_PROB = 0.05 # 1/20 chance
+
+MOVEABLE = ['.', '+', '#', '>', '<']
+
 Room = collections.namedtuple('Room', 'x y width height')
 Point = collections.namedtuple('Point', 'x y')
+
+MONSTERS = [
+    ('kiwi', 'k', 2, 1),
+    ('goblin', 'g', 10, 1),
+    ('panda', 'P', 40, 1),
+]
+
+class Monster:
+    def __init__(self, pos, name, what, hp, dmg):
+        self.pos = pos
+        self.name = name
+        self.what = what
+        self.hp = hp
+        self.dmg = dmg
+        self.old = '.' # monsters always spawn on a '.'
+
+    def move(self, level, newpos):
+        level[self.pos.x][self.pos.y] = self.old
+        self.old = level[newpos.x][newpos.y]
+        level[newpos.x][newpos.y] = 'm'
+        self.pos = newpos
+
+    def die(self, level):
+        level[self.pos.x][self.pos.y] = self.old
+
 
 def random_door(level, room):
     '''
@@ -92,14 +125,22 @@ def dist(p0, p1):
     return ((p0.x - p1.x)**2 + (p0.y - p1.y)**2)**0.5
 
 
+def dxdy(p):
+    '''
+    Yield the locations around the position to the left, right, above, and
+    below.
+    '''
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        yield Point(p.x+dx, p.y+dy)
+
+
 def create_path(level, p0, p1):
     '''
     Connect two points on the map with a path.
     '''
     # Compute all possible directions from here
     points = []
-    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        p = Point(p0.x+dx, p0.y+dy)
+    for p in dxdy(p0):
         if p == p1:
             return True
 
@@ -125,18 +166,23 @@ def create_path(level, p0, p1):
     return False
 
 
-def add_staircase(level, room, staircase):
+def add_to_room(level, room, what):
     '''
-    Add staircase to random location within the room
+    Pick a random open location in the room and add what at the location.
     '''
     points = []
 
     for j in range(1, room.height):
         for i in range(1, room.width):
-            points.append(Point(room.x+i, room.y+j))
+            if level[room.x+i][room.y+j] == '.':
+                points.append(Point(room.x+i, room.y+j))
+
+    if len(points) == 0:
+        return None
 
     p = random.choice(points)
-    level[p.x][p.y] = staircase
+    level[p.x][p.y] = what
+    return p
 
 
 def make_level():
@@ -147,6 +193,7 @@ def make_level():
     for i in range(X_DIM):
         level.append([None] * Y_DIM)
 
+    monsters = []
     rooms = []
 
     # Randomly N generate room in level
@@ -174,6 +221,17 @@ def make_level():
             level = new_level
             rooms.append(room)
 
+            # Check whether we should add a trap to this room
+            if random.random() < TRAP_PROB:
+                add_to_room(level, room, 'x')
+
+            # Check whether we should add a monster to this room
+            if random.random() < MONSTER_PROB:
+                p = add_to_room(level, room, 'm')
+                if p:
+                    m = MONSTERS[random.randrange(len(MONSTERS))]
+                    monsters.append(Monster(p, *m))
+
             break
 
     # Connect the rooms with random paths
@@ -192,10 +250,10 @@ def make_level():
 
     # Pick random room for stairs leading up and down
     up, down = random.sample(rooms, 2)
-    add_staircase(level, up, '<')
-    add_staircase(level, down, '>')
+    add_to_room(level, up, '<')
+    add_to_room(level, down, '>')
 
-    return level
+    return level, monsters
 
 
 def find_staircase(level, staircase):
@@ -209,7 +267,7 @@ def find_staircase(level, staircase):
     return None
 
 
-def print_level(level):
+def print_level(level, monsters):
     '''
     Print the level using spaces when a tile isn't set
     '''
@@ -217,6 +275,14 @@ def print_level(level):
         for i in range(X_DIM):
             if level[i][j] == None:
                 sys.stdout.write(' ')
+            elif level[i][j] == 'x':
+                # It's a trap!
+                sys.stdout.write('.')
+            elif level[i][j] == 'm':
+                for m in monsters:
+                    if m.pos.x == i and m.pos.y == j:
+                        sys.stdout.write(m.what)
+                        break
             else:
                 sys.stdout.write(level[i][j])
         sys.stdout.write('\n')
@@ -240,27 +306,44 @@ def read_key():
 if __name__ == '__main__':
     # Initialize the first level
     levels = []
+    monsters = []
+
     current = 0
-    levels.append(make_level())
+
+    res = make_level()
+    levels.append(res[0])
+    monsters.append(res[1])
 
     pos = find_staircase(levels[current], '<')
 
+    curhp = maxhp = 10
+
     while True:
+        wait = False
+
         # Clear the terminal
         sys.stdout.write("\x1b[2J\x1b[H")
+
+        if curhp <= 0:
+            sys.stdout.write('You died. gg\n')
+            break
 
         level = levels[current]
 
         # Swap in an '@' character in the position of the character, print the
         # level, and then swap back
         old, level[pos.x][pos.y] = level[pos.x][pos.y], '@'
-        print_level(level)
+        print_level(level, monsters[current])
         level[pos.x][pos.y] = old
+
+        sys.stdout.write('Health: {}/{}\n'.format(curhp, maxhp))
 
         key = read_key()
 
         if key == 'q':
             break
+        elif key == '.':
+            newpos = pos
         elif key == 'h':
             newpos = Point(pos.x-1, pos.y)
         elif key == 'j':
@@ -269,22 +352,72 @@ if __name__ == '__main__':
             newpos = Point(pos.x, pos.y-1)
         elif key == 'l':
             newpos = Point(pos.x+1, pos.y)
+        elif key == '>':
+            if level[newpos.x][newpos.y] == '>':
+                # Moving down a level
+                if current == len(levels) - 1:
+                    res = make_level()
+                    levels.append(res[0])
+                    monsters.append(res[1])
+
+                current += 1
+                pos = find_staircase(levels[current], '<')
+                continue
+        elif key == '<':
+            if level[newpos.x][newpos.y] == '<':
+                # Moving up a level
+                if current > 0:
+                    current -= 1
+                    pos = find_staircase(levels[current], '>')
+                    continue
         else:
             continue
 
-        if level[newpos.x][newpos.y] == '>':
-            # Moving down a level
-            if current == len(levels) - 1:
-                levels.append(make_level())
-            current += 1
-            newpos = find_staircase(levels[current], '<')
-        elif level[newpos.x][newpos.y] == '<':
-            # Moving up a level
-            if current > 0:
-                current -= 1
-                newpos = find_staircase(levels[current], '>')
-        elif level[newpos.x][newpos.y] not in ['.', '+', '#']:
+        if level[newpos.x][newpos.y] in ['x', 'o']:
+            # Walked onto a trap, reveal the trap and hurt the player
+            level[newpos.x][newpos.y] = 'o'
+            curhp -= 1
+            wait = False
+            sys.stdout.write('Ouch, it\' a trap!\n')
+        elif level[newpos.x][newpos.y] == 'm':
+            # Walked into a monster, attack!
+            for m in monsters[current]:
+               if m.pos == newpos:
+                    m.hp -= 2
+            newpos = pos
+        elif level[newpos.x][newpos.y] not in MOVEABLE:
             # Hit a wall, should stay put
             newpos = pos
 
         pos = newpos
+
+        # Random chance to regen some health
+        if random.random() < REGEN_PROB:
+            curhp += 1
+            curhp = min(curhp, maxhp)
+
+        # Update the monsters
+        for m in monsters[current]:
+            if m.hp <= 0:
+                m.die(level)
+                monsters[current].remove(m)
+                sys.stdout.write('You\'ve done it, you killed a {}!\n'.format(m.name))
+                wait = True
+                continue
+
+            d0 = dist(pos, m.pos)
+            if d0 < 15:
+                # Move the monster towards the player
+                for p in dxdy(m.pos):
+                    d1 = dist(pos, p)
+                    if pos == p:
+                        # Monster moves into player, attack!
+                        curhp -= m.dmg
+                    elif level[p.x][p.y] in MOVEABLE and d1 < d0:
+                        m.move(level, p)
+                        break
+
+        # See if we should wait before redrawing the level
+        if wait:
+            sys.stdout.flush()
+            key = read_key()
